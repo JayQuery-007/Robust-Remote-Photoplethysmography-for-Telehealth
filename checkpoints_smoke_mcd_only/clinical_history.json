@@ -1,0 +1,19 @@
+[
+  {
+    "clinical_epoch": 1.0,
+    "train_mcd_loss": 2268.96923828125,
+    "train_mcd_mae_sbp": 110.35605239868164,
+    "train_mcd_mae_dbp": 75.81637191772461,
+    "train_mcd_mae_hb": 11.675910949707031,
+    "train_mcd_steps": 2.0,
+    "val_mcd_mae_sbp": 114.20671081542969,
+    "val_mcd_mae_dbp": 70.61158752441406,
+    "val_mcd_mae_hb": 14.27893352508545,
+    "val_mcd_rmse_sbp": 114.29307556152344,
+    "val_mcd_rmse_dbp": 70.79193115234375,
+    "val_mcd_rmse_hb": 14.280574798583984,
+    "val_mcd_mae_mean": 66.3657455444336,
+    "val_mcd_steps": 8.0,
+    "clinical_lr": 5e-06
+  }
+]

@@ -1,0 +1,19 @@
+[
+  {
+    "clinical_epoch": 1.0,
+    "train_mcd_loss": NaN,
+    "train_mcd_mae_sbp": NaN,
+    "train_mcd_mae_dbp": NaN,
+    "train_mcd_mae_hb": NaN,
+    "train_mcd_steps": 20.0,
+    "val_mcd_mae_sbp": NaN,
+    "val_mcd_mae_dbp": NaN,
+    "val_mcd_mae_hb": NaN,
+    "val_mcd_rmse_sbp": NaN,
+    "val_mcd_rmse_dbp": NaN,
+    "val_mcd_rmse_hb": NaN,
+    "val_mcd_mae_mean": NaN,
+    "val_mcd_steps": 80.0,
+    "clinical_lr": 5e-05
+  }
+]

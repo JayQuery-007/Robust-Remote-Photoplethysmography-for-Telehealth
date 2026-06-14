@@ -1,0 +1,28 @@
+[
+  {
+    "epoch": 1.0,
+    "train_ibvp_loss": 18.24173946380615,
+    "train_ibvp_hr_loss": 55.76359176635742,
+    "train_ibvp_steps": 5.0,
+    "val_ibvp_loss": 30.57848024368286,
+    "val_ibvp_wave_loss": 0.9916620850563049,
+    "val_ibvp_green_loss": 0.9907854795455933,
+    "val_ibvp_roi_loss": 0.4516127407550812,
+    "val_ibvp_hr_loss": 97.00060081481934,
+    "val_ibvp_pearson": 0.008337894454598427,
+    "val_ibvp_rmse": 0.44471506774425507,
+    "val_ibvp_steps": 2.0,
+    "val_ibvp_hr_mae": 0.0,
+    "val_ibvp_hr_rmse": 0.0,
+    "val_ibvp_hr_mape": 0.0,
+    "val_ibvp_hr_bias": 0.0,
+    "val_ibvp_hr_loa_low": 0.0,
+    "val_ibvp_hr_loa_high": 0.0,
+    "val_ibvp_hr_pearson": 0.0,
+    "val_ibvp_hr_ccc": 0.0,
+    "val_ibvp_hr_within_5": 1.0,
+    "val_ibvp_hr_within_10": 1.0,
+    "lr": 1.4999999999999999e-05,
+    "score": 0.0
+  }
+]
