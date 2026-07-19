@@ -27,6 +27,25 @@ from equiphys_core import (
     test_time_adaptation,
 )
 
+from facial_vitals import (
+    SRC_RATIO_CAL,
+    VitalsCalibration,
+    clean_frame_mask,
+    extract_pulse_morphology,
+    frame_diff_motion,
+    reconstruct_facial_bvp,
+    select_clean_frames,
+    spo2_from_faces,
+)
+from streamlit_vitals_integration import sidebar_calibration_controls
+from camera_calibration import (
+    CameraCalibration,
+    sidebar_camera_calibration_panel,
+    apply_camera_calibration,
+    feed_calibration_frame,
+)
+from video_analysis import render_video_analysis_tab
+
 
 def _inject_css() -> None:
     st.markdown(
@@ -245,11 +264,10 @@ def _render_metric_card(label: str, value: str, unit: str) -> None:
         unsafe_allow_html=True,
     )
 
-def _estimate_bp_hb_from_hr(hr: float) -> Tuple[Tuple[int, int], float]:
-    sbp = int(np.clip(90 + 0.40 * hr, 95, 150))
-    dbp = int(np.clip(58 + 0.28 * hr, 58, 100))
-    hb = float(np.clip(13.2 + 0.02 * (hr - 70), 11.0, 16.5))
-    return (sbp, dbp), hb
+# NOTE: the old `_estimate_bp_hb_from_hr` heuristic (BP/Hb as a fixed linear
+# function of heart rate) has been REMOVED. BP now comes from facial pulse-wave
+# morphology via facial_vitals.PersonalizedBPEstimator, which needs a cuff
+# baseline or trained model and refuses to fabricate a number otherwise.
 
 def _estimate_camera_fps(ts_buffer: deque, fallback: float = 30.0) -> float:
     if len(ts_buffer) < 10:
@@ -367,6 +385,18 @@ def main() -> None:
     default_ckpt = _resolve_default_checkpoint()
     checkpoint_path = st.sidebar.text_input("Checkpoint path", value=default_ckpt)
 
+    # SpO2 device calibration + BP cuff-baseline capture live here.
+    calib = sidebar_calibration_controls(st, st.session_state)
+
+    # Camera colour, lighting, motion-floor calibration.
+    cam_cal = sidebar_camera_calibration_panel(st, st.session_state)
+    # Wire the SpO2 device calibration result from the camera panel back into calib,
+    # so both sidebar sections stay in sync.
+    _spo2_cal_from_cam = st.session_state.get("spo2_cal_result")
+    if _spo2_cal_from_cam is not None:
+        calib.spo2 = _spo2_cal_from_cam
+    calib.allow_provisional_spo2 = st.session_state.get("spo2_show_prov", True)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = _load_model(device, checkpoint_path=checkpoint_path if checkpoint_path else None)
     
@@ -394,6 +424,9 @@ def main() -> None:
     TACHY_SNAP_SNR_DB = 7.5
     TACHY_SNAP_DELTA_BPM = 15.0
     MOTION_GATE_PX = 3.5
+    FACE_SWITCH_VOTES_REQUIRED = 12  # sustained IoU drop before declaring a new face
+    MOTION_MAD_K = 3.5               # per-frame motion rejection sensitivity
+    MOTION_CLEAN_MIN_FRAC = 0.35     # below this fraction of clean frames -> hold
     NORM_CROP_SIZE = 128
     MODEL_FRAMES = 150
     TRAD_BUFFER_LEN = int(TARGET_FS * 10.0)
@@ -407,8 +440,9 @@ def main() -> None:
     hr_long_buffer: deque = deque(maxlen=60)
     logs: deque = deque(maxlen=200)
     face_miss_count = 0
+    face_switch_votes = 0
     prev_face_bbox: Optional[Tuple[int, int, int, int]] = None
-    no_face_grace = 6
+    no_face_grace = 45  # ~1.5 s: coast through brief detector misses, don't reset
     last_infer_ts = 0.0
     inference_interval_s = 1.0
     last_hr = 0.0
@@ -441,43 +475,60 @@ def main() -> None:
     rr_initialized = False
     best_snr = -np.inf
 
+    # Provenance-aware SpO2 / BP state (None until a real facial measurement).
+    last_spo2_vs = None
+    last_bp_sbp_vs = None
+    last_bp_dbp_vs = None
+    bvp_wave = None
+    bvp_fs = float(TARGET_FS)
+
     cascade = _load_cascade()
     if cascade.empty():
         st.error("OpenCV face cascade failed to load.")
         return
 
-    # Adjusted column layout for better balance
-    left_col, mid_col, right_col = st.columns([1.2, 1.5, 1.0])
+    # ── Top-level mode tabs ──────────────────────────────────────────────────────────────────
+    tab_live, tab_video = st.tabs(["\U0001f4f9  Live Inference", "\U0001f3ac  Video Analysis"])
 
-    with left_col:
-        st.markdown('<div class="panel-wrap">', unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">Video Feed</div>', unsafe_allow_html=True)
-        frame_slot = st.empty()
-        status_slot = st.empty()
-        run = st.checkbox("Start Live Inference", value=False)
-        st.markdown('</div>', unsafe_allow_html=True)
+    # ── Video Analysis tab (self-contained, no webcam needed) ─────────────────
+    with tab_video:
+        render_video_analysis_tab(st, cam_cal=cam_cal)
 
-    with mid_col:
-        st.markdown('<div class="panel-wrap">', unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">Clinical Vitals</div>', unsafe_allow_html=True)
-        m1, m2, m3 = st.columns(3)
-        with m1: hr_slot = st.empty()
-        with m2: spo2_slot = st.empty()
-        with m3: rr_slot = st.empty()
-        st.markdown('<br>', unsafe_allow_html=True)
-        sqi_slot = st.empty()
-        wave_slot = st.empty()
-        st.markdown('</div>', unsafe_allow_html=True)
+    # ── Live Inference tab ─────────────────────────────────────────────────────────────────────
+    with tab_live:
+        left_col, mid_col, right_col = st.columns([1.2, 1.5, 1.0])
 
-    with right_col:
-        st.markdown('<div class="panel-wrap">', unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">Diagnostics Log</div>', unsafe_allow_html=True)
-        log_slot = st.empty()
-        st.markdown('</div>', unsafe_allow_html=True)
+        with left_col:
+            st.markdown('<div class="panel-wrap">', unsafe_allow_html=True)
+            st.markdown('<div class="panel-title">Video Feed</div>', unsafe_allow_html=True)
+            frame_slot = st.empty()
+            status_slot = st.empty()
+            run = st.checkbox("Start Live Inference", value=False)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with mid_col:
+            st.markdown('<div class="panel-wrap">', unsafe_allow_html=True)
+            st.markdown('<div class="panel-title">Clinical Vitals</div>', unsafe_allow_html=True)
+            m1, m2, m3, m4 = st.columns(4)
+            with m1: hr_slot = st.empty()
+            with m2: spo2_slot = st.empty()
+            with m3: rr_slot = st.empty()
+            with m4: bp_slot = st.empty()
+            st.markdown('<br>', unsafe_allow_html=True)
+            sqi_slot = st.empty()
+            wave_slot = st.empty()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with right_col:
+            st.markdown('<div class="panel-wrap">', unsafe_allow_html=True)
+            st.markdown('<div class="panel-title">Diagnostics Log</div>', unsafe_allow_html=True)
+            log_slot = st.empty()
+            st.markdown('</div>', unsafe_allow_html=True)
 
     if not run:
-        with left_col:
-            st.info("Toggle 'Start Live Inference' to connect webcam.")
+        with tab_live:
+            with left_col:
+                st.info("Toggle 'Start Live Inference' to connect webcam.")
         return
 
     cap = cv2.VideoCapture(0)
@@ -507,14 +558,23 @@ def main() -> None:
             else:
                 face_miss_count = 0
 
-            if face_bbox is not None and prev_face_bbox is not None and _bbox_iou(face_bbox, prev_face_bbox) < 0.20:
+            if face_bbox is not None and prev_face_bbox is not None:
+                if _bbox_iou(face_bbox, prev_face_bbox) < 0.20:
+                    face_switch_votes += 1
+                else:
+                    face_switch_votes = max(0, face_switch_votes - 2)
+            else:
+                face_switch_votes = max(0, face_switch_votes - 2)
+
+            if face_switch_votes >= FACE_SWITCH_VOTES_REQUIRED:
+                face_switch_votes = 0
                 frame_buffer.clear(); trad_roi_buffer.clear(); trad_ts_buffer.clear(); trad_landmark_buffer.clear()
                 hr_buffer.clear(); hr_long_buffer.clear()
                 adapted = False; ema_initialized = False; last_bvp = None; last_infer_ts = 0.0; last_hr = 0.0
                 display_hr = 0.0; warmup_count = 0; hr_stability_window.clear(); locked_hr = None
                 manual_locked_hr = None; unlock_votes = 0; hr_tracker.reset(); spo2_initialized = False
                 rr_initialized = False; last_spo2 = 0.0; last_rr = 0.0; last_sqi = 0.0; best_snr = -np.inf
-                logs.appendleft(f"[{datetime.now().strftime('%H:%M:%S')}] Face switched. Re-calibrating.")
+                logs.appendleft(f"[{datetime.now().strftime('%H:%M:%S')}] Different face \u2014 recalibrating.")
 
             prev_face_bbox = face_bbox if face_bbox is not None else prev_face_bbox
 
@@ -542,10 +602,16 @@ def main() -> None:
 
             if face_bbox is not None:
                 roi_rgb, roi_mask, roi_landmarks = roi_extractor.extract_with_landmarks(frame)
-                frame_buffer.append(roi_rgb)
+
+                # ── Camera calibration: feed raw frame into active capture window,
+                #    then apply colour + lighting corrections before buffering. ──
+                feed_calibration_frame(roi_rgb, st.session_state, logs)
+                roi_rgb_cal = apply_camera_calibration(roi_rgb, cam_cal)
+
+                frame_buffer.append(roi_rgb_cal)
 
                 mask3 = np.repeat((roi_mask > 0.5).astype(np.float32)[..., None], 3, axis=2)
-                masked_roi = roi_rgb.astype(np.float32) * mask3
+                masked_roi = roi_rgb_cal.astype(np.float32) * mask3
                 trad_crop_norm = cv2.resize(masked_roi, (NORM_CROP_SIZE, NORM_CROP_SIZE), interpolation=cv2.INTER_AREA)
                 trad_roi_buffer.append(trad_crop_norm.astype(np.float32))
                 trad_ts_buffer.append(frame_ts)
@@ -564,29 +630,35 @@ def main() -> None:
 
             if should_infer:
                 last_infer_ts = now_ts
-                motion_disp_px = compute_landmark_motion_displacement(list(trad_landmark_buffer), min_frames=MIN_TRAD_FRAMES)
-                if np.isfinite(motion_disp_px) and motion_disp_px > MOTION_GATE_PX:
-                    best_snr = -np.inf
-                    logs.appendleft(f"[{datetime.now().strftime('%H:%M:%S')}] Motion detected ({motion_disp_px:.2f}px). Window rejected.")
-                    status_slot.warning(f"Motion Detected ({motion_disp_px:.1f}px). Keep still.")
+                # -- Per-frame motion masking: drop only shaky frames, keep the rest --
+                trad_ts = np.asarray(list(trad_ts_buffer), dtype=np.float64)
+                motion = frame_diff_motion(list(trad_roi_buffer))
+                _motion_k = cam_cal.motion.motion_mad_k if cam_cal.motion.ready else MOTION_MAD_K
+                keep_mask = clean_frame_mask(motion, k=_motion_k)
+                roi_est, ts_est = select_clean_frames(list(trad_roi_buffer), trad_ts, keep_mask)
+                clean_frac = float(np.mean(keep_mask)) if keep_mask.size else 0.0
+
+                if len(roi_est) < 30 or clean_frac < MOTION_CLEAN_MIN_FRAC:
+                    # Too much motion this tick -- HOLD the last reading; never clear the buffer.
+                    logs.appendleft(f"[{datetime.now().strftime('%H:%M:%S')}] High motion (clean {clean_frac*100:.0f}%) \u2014 holding last reading.")
+                    status_slot.info("Motion high \u2014 holding last reading (no reset). Settle for a moment.")
                     log_slot.markdown(f'<div class="logbox">{chr(10).join(list(logs)[:30])}</div>', unsafe_allow_html=True)
                     continue
 
                 fs_effective = _effective_fs_from_timestamps(trad_ts_buffer, fallback=fps_est)
-                trad_ts = np.asarray(list(trad_ts_buffer), dtype=np.float64)
 
                 pos_hr, pos_snr = estimate_hr_from_rgb_pos(
-                    trad_roi_buffer, fps=fs_effective, f_low=1.0, f_high=2.0, 
-                    timestamps=trad_ts, target_fs=fs_effective, prev_hr_bpm=None,
+                    roi_est, fps=fs_effective, f_low=1.0, f_high=2.0, 
+                    timestamps=ts_est, target_fs=fs_effective, prev_hr_bpm=None,
                 )
                 chrom_hr, chrom_snr = estimate_hr_from_rgb_chrom(
-                    trad_roi_buffer, fps=fs_effective, f_low=1.0, f_high=2.0,
-                    timestamps=trad_ts, target_fs=fs_effective, prev_hr_bpm=None,
+                    roi_est, fps=fs_effective, f_low=1.0, f_high=2.0,
+                    timestamps=ts_est, target_fs=fs_effective, prev_hr_bpm=None,
                 )
-                green_trace = _green_trace_from_faces(trad_roi_buffer)
+                green_trace = _green_trace_from_faces(roi_est)
                 ac_hr, ac_score = estimate_hr_from_autocorr(
                     green_trace, fps=fs_effective, f_low=0.8, f_high=2.5,
-                    timestamps=trad_ts, target_fs=fs_effective,
+                    timestamps=ts_est, target_fs=fs_effective,
                 ) if green_trace is not None else (0.0, 0.0)
 
                 model_hr = 0.0
@@ -609,7 +681,13 @@ def main() -> None:
 
                 quality_sig = last_bvp if last_bvp is not None else green_trace
                 sqi = compute_signal_quality_index(quality_sig, fps=fs_effective) if quality_sig is not None else 0.0
-                spo2_raw = estimate_spo2_from_rgb(trad_roi_buffer, fps=fs_effective)
+                # Reconstruct the facial pulse once (reused for BP morphology).
+                bvp_wave, bvp_fs, _bvp_snr, _ = reconstruct_facial_bvp(
+                    roi_est, timestamps=ts_est, target_fs=fs_effective
+                )
+                # Honest SpO2: real red/green ratio mapped through device calibration.
+                last_spo2_vs = spo2_from_faces(roi_est, fs_effective, calib.spo2)
+                spo2_raw = last_spo2_vs.value if last_spo2_vs.available else 0.0
                 rr_raw = estimate_respiratory_rate(quality_sig, fps=fs_effective) if quality_sig is not None else 0.0
 
                 candidates = []
@@ -763,8 +841,36 @@ def main() -> None:
                     last_rr = ema_rr
 
                 last_sqi = sqi
+
+                # Blood pressure from facial pulse-wave morphology.
+                morph = extract_pulse_morphology(bvp_wave, bvp_fs) if bvp_wave is not None else {"morph_quality": 0.0}
+                if display_hr > 0:
+                    morph["heart_rate"] = float(display_hr)
+                st.session_state["last_morph"] = morph
+                # Auto-anchor to the entered cuff reading on the first stable tick
+                # (and re-anchor if the entered values change). Works inside the
+                # blocking loop, unlike a sidebar button.
+                if calib.bp_anchor is not None:
+                    want_sbp, want_dbp = calib.bp_anchor
+                    b = calib.bp.baseline
+                    if b is None or abs(b.sbp - want_sbp) > 0.5 or abs(b.dbp - want_dbp) > 0.5:
+                        calib.bp.set_baseline(morph, want_sbp, want_dbp)
+                        logs.appendleft(f"[{datetime.now().strftime('%H:%M:%S')}] BP anchored to cuff {want_sbp:.0f}/{want_dbp:.0f} mmHg.")
+                last_bp_sbp_vs, last_bp_dbp_vs = calib.bp.estimate(morph)
+
                 val_str = " ".join(f"{l}={v:.0f}({s:.1f}dB)" for l, v, s in corrected) if candidates else "none"
                 logs.appendleft(f"[{datetime.now().strftime('%H:%M:%S')}] HR={display_hr:.0f} [{val_str}] sqi={sqi:.0f} fps={fs_effective:.1f}")
+
+                # Log the raw SpO2 ratio-R so users can pair it with an oximeter reading
+                # and paste the pair into the SpO2 calibration box in the sidebar.
+                if last_spo2_vs is not None and last_spo2_vs.extra:
+                    _ratio_r = last_spo2_vs.extra.get("ratio_R")
+                    if _ratio_r is not None and np.isfinite(_ratio_r):
+                        logs.appendleft(
+                            f"[{datetime.now().strftime('%H:%M:%S')}] "
+                            f"SpO₂ ratio-R={_ratio_r:.4f}  "
+                            f"(paste as '<oximeter %>  , {_ratio_r:.4f}' in sidebar)"
+                        )
 
             # ── Display metrics ──
             with hr_slot:
@@ -774,7 +880,8 @@ def main() -> None:
                     _render_metric_card("HEART RATE", f"{int(round(display_hr))}", "BPM")
             with spo2_slot:
                 if last_spo2 > 0:
-                    _render_metric_card("SpO\u2082 ESTIMATE", f"{last_spo2:.0f}", "%")
+                    _spo2_unit = "%" if (last_spo2_vs is not None and last_spo2_vs.source == SRC_RATIO_CAL) else "% \u00b7 prov."
+                    _render_metric_card("SpO\u2082 ESTIMATE", f"{last_spo2:.0f}", _spo2_unit)
                 else:
                     _render_metric_card("SpO\u2082 ESTIMATE", "--", "%")
             with rr_slot:
@@ -782,6 +889,14 @@ def main() -> None:
                     _render_metric_card("RESP RATE", f"{last_rr:.0f}", "br/min")
                 else:
                     _render_metric_card("RESP RATE", "--", "br/min")
+            with bp_slot:
+                if (warmup_count >= warmup_needed and last_bp_sbp_vs is not None
+                        and last_bp_sbp_vs.available and last_bp_dbp_vs is not None
+                        and last_bp_dbp_vs.available):
+                    _render_metric_card("BLOOD PRESSURE",
+                                        f"{last_bp_sbp_vs.value:.0f}/{last_bp_dbp_vs.value:.0f}", "mmHg")
+                else:
+                    _render_metric_card("BLOOD PRESSURE", "--", "mmHg")
 
             if last_sqi > 0:
                 q_label = "Good Signal" if last_sqi >= 60 else ("Fair Signal" if last_sqi >= 30 else "Poor \u2014 Keep Still")

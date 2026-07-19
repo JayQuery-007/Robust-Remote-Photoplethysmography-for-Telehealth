@@ -1,0 +1,4 @@
+method,n_subjects,n_valid,n_failed,mae_mean,mae_std,mae_median,rmse,mean_bias,mean_rel_err_pct,pct_within_2bpm,pct_within_5bpm,pct_within_10bpm,mean_snr_db
+deep,42,42,0,16.561,9.784,18.665,19.235,-10.062,17.632,4.8,16.7,31.0,1.61
+pos,42,42,0,5.105,10.72,1.96,11.873,1.888,6.353,50.0,73.8,90.5,3.08
+chrom,42,42,0,5.046,10.71,1.855,11.839,1.893,6.291,52.4,78.6,90.5,3.01
