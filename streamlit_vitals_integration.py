@@ -122,16 +122,31 @@ def _card(st, label: str, v: VitalSign, unit_override: str = "") -> None:
         sub = f"{tag} · confidence {'▮'*bars}{'▯'*(5-bars)}"
         if v.source in ("rppg_ratio_uncalibrated", "rppg_morphology_personalized"):
             sub += f" · {v.note}"
+            
+    color_map = {
+        "HEART RATE": "red",
+        "SpO₂": "cyan",
+        "RESP RATE": "emerald",
+        "BLOOD PRESSURE": "purple"
+    }
+    color_theme = color_map.get(label, "blue")
+    
+    theme_colors = {
+        "red": {"border": "#f43f5e", "glow": "rgba(244, 63, 94, 0.15)"},
+        "cyan": {"border": "#06b6d4", "glow": "rgba(6, 182, 212, 0.15)"},
+        "emerald": {"border": "#10b981", "glow": "rgba(16, 185, 129, 0.15)"},
+        "purple": {"border": "#8b5cf6", "glow": "rgba(139, 92, 246, 0.15)"},
+        "blue": {"border": "#3b82f6", "glow": "rgba(59, 130, 246, 0.15)"},
+    }
+    c = theme_colors.get(color_theme, theme_colors["blue"])
+    
     st.markdown(
         f"""
-        <div style="background:#0f172a;border:1px solid #334155;border-radius:8px;
-                    padding:16px 12px;text-align:center;min-height:150px;
-                    display:flex;flex-direction:column;justify-content:center;">
-          <div style="color:#94a3b8;font-size:12px;font-weight:600;letter-spacing:.5px;">{label}</div>
-          <div style="font-size:44px;font-weight:700;color:#f8fafc;line-height:1;
-                      font-variant-numeric:tabular-nums;margin:6px 0;">{val}</div>
-          <div style="color:#64748b;font-size:13px;font-weight:500;">{unit}</div>
-          <div style="color:#475569;font-size:10.5px;margin-top:8px;">{sub}</div>
+        <div class="metric-shell-new" style="border-left: 4px solid {c['border']}; --glow-color: {c['glow']};">
+          <div class="metric-label-new">{label}</div>
+          <div class="metric-value-new">{val}</div>
+          <div class="metric-unit-new">{unit}</div>
+          <div class="metric-status">{sub}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -167,14 +182,11 @@ def render_vitals_panel(st, vitals: Dict[str, VitalSign], slots: Dict[str, objec
                 tag = SRC_LABEL.get(sbp.source, sbp.source)
                 st.markdown(
                     f"""
-                    <div style="background:#0f172a;border:1px solid #334155;border-radius:8px;
-                                padding:16px 12px;text-align:center;min-height:150px;
-                                display:flex;flex-direction:column;justify-content:center;">
-                      <div style="color:#94a3b8;font-size:12px;font-weight:600;">BLOOD PRESSURE</div>
-                      <div style="font-size:40px;font-weight:700;color:#f8fafc;margin:6px 0;
-                                  font-variant-numeric:tabular-nums;">{sbp.value:.0f}/{dbp.value:.0f}</div>
-                      <div style="color:#64748b;font-size:13px;">mmHg</div>
-                      <div style="color:#475569;font-size:10.5px;margin-top:8px;">{tag} · {sbp.note}</div>
+                    <div class="metric-shell-new" style="border-left: 4px solid #8b5cf6; --glow-color: rgba(139, 92, 246, 0.15);">
+                      <div class="metric-label-new">BLOOD PRESSURE</div>
+                      <div class="metric-value-new">{sbp.value:.0f}/{dbp.value:.0f}</div>
+                      <div class="metric-unit-new">mmHg</div>
+                      <div class="metric-status">{tag} · {sbp.note}</div>
                     </div>
                     """,
                     unsafe_allow_html=True,

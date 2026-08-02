@@ -478,11 +478,11 @@ def render_video_analysis_tab(st, cam_cal=None) -> None:
                  "compressed dataset videos typically need 0.08–0.15.",
         )
 
-    run_btn = st.button("▶  Analyse video", key="_vid_run", type="primary",
+    run_btn = st.button("Analyse video", key="_vid_run", type="primary",
                         disabled=uploaded is None)
 
     if uploaded is None:
-        st.info("Upload a video file above to begin.", icon="📂")
+        st.info("Upload a video file above to begin.")
         return
 
     if not run_btn and "vid_result" not in st.session_state:
@@ -541,51 +541,56 @@ def _render_results(st, r: VideoAnalysisResult) -> None:
     # Warnings banner
     if r.warnings:
         for w in r.warnings:
-            st.warning(w, icon="⚠️")
+            st.warning(w)
 
     # ── Top metric cards ──────────────────────────────────────────────────────
     c1, c2, c3, c4, c5 = st.columns(5)
 
-    def _card(col, label, value, unit, colour="#f8fafc", sub=""):
+    def _card(col, label, value, unit, color_theme="blue", sub=""):
         val_str = f"{value:.1f}" if isinstance(value, float) else (str(value) if value is not None else "—")
-        sub_html = (f'<div style="color:#475569;font-size:10px;margin-top:4px;">{sub}</div>'
-                    if sub else "")
+        theme_colors = {
+            "red": {"border": "#f43f5e", "glow": "rgba(244, 63, 94, 0.15)"},
+            "cyan": {"border": "#06b6d4", "glow": "rgba(6, 182, 212, 0.15)"},
+            "emerald": {"border": "#10b981", "glow": "rgba(16, 185, 129, 0.15)"},
+            "purple": {"border": "#8b5cf6", "glow": "rgba(139, 92, 246, 0.15)"},
+            "blue": {"border": "#3b82f6", "glow": "rgba(59, 130, 246, 0.15)"},
+            "pink": {"border": "#ec4899", "glow": "rgba(236, 72, 153, 0.15)"},
+        }
+        c = theme_colors.get(color_theme, theme_colors["blue"])
+        sub_html = f'<div class="metric-status">{sub}</div>' if sub else ""
         col.markdown(
-            f"""<div style="background:#0f172a;border:1px solid #334155;border-radius:8px;
-                padding:14px 10px;text-align:center;">
-              <div style="color:#94a3b8;font-size:11px;font-weight:600;
-                          letter-spacing:.5px;margin-bottom:4px;">{label}</div>
-              <div style="font-size:38px;font-weight:700;color:{colour};
-                          font-variant-numeric:tabular-nums;line-height:1;">{val_str}</div>
-              <div style="color:#64748b;font-size:12px;margin-top:2px;">{unit}</div>
+            f"""
+            <div class="metric-shell-new" style="border-left: 4px solid {c['border']}; --glow-color: {c['glow']};">
+              <div class="metric-label-new">{label}</div>
+              <div class="metric-value-new">{val_str}</div>
+              <div class="metric-unit-new">{unit}</div>
               {sub_html}
-            </div>""",
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
-    _card(c1, "HEART RATE", r.hr_bpm, "BPM",
-          colour="#34d399" if r.snr_db > 3 else "#fbbf24",
-          sub=r.method_used)
-    _card(c2, "RESP RATE", r.rr_bpm, "br/min")
-    _card(c3, "SpO₂ (prov.)", r.spo2_pct, "%", colour="#60a5fa")
-    _card(c4, "SIGNAL SNR", round(r.snr_db, 1) if np.isfinite(r.snr_db) else None, "dB",
-          colour="#a78bfa")
-    _card(c5, "SQI", round(r.sqi, 0), "/ 100",
-          colour="#f472b6")
+    _card(c1, "HEART RATE", r.hr_bpm, "BPM", "red", r.method_used)
+    _card(c2, "RESP RATE", r.rr_bpm, "br/min", "emerald", "Spectral")
+    _card(c3, "SpO₂ (prov.)", r.spo2_pct, "%", "cyan", "Provisional")
+    _card(c4, "SIGNAL SNR", round(r.snr_db, 1) if np.isfinite(r.snr_db) else None, "dB", "blue", "POS peak")
+    _card(c5, "SQI", round(r.sqi, 0), "/ 100", "pink", "Quality Index")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Validation row (only shown when GT provided) ──────────────────────────
     if r.gt_hr_bpm is not None:
         v1, v2, v3, v4 = st.columns(4)
-        _card(v1, "GT HEART RATE", r.gt_hr_bpm, "BPM", colour="#94a3b8")
+        _card(v1, "GT HEART RATE", r.gt_hr_bpm, "BPM", "blue", "Reference")
         _card(v2, "MAE", r.mae_bpm, "BPM",
-              colour="#4ade80" if r.mae_bpm is not None and r.mae_bpm < 5 else "#f87171")
+              "emerald" if r.mae_bpm is not None and r.mae_bpm < 5 else "red",
+              "Mean Abs Error")
         _card(v3, "REL ERROR", r.rel_err_pct, "%",
-              colour="#4ade80" if r.rel_err_pct is not None and r.rel_err_pct < 5 else "#f87171")
+              "emerald" if r.rel_err_pct is not None and r.rel_err_pct < 5 else "red",
+              "Percentage")
         _card(v4, "POS vs GT", 
               round(abs(r.hr_pos_bpm - r.gt_hr_bpm), 1) if r.hr_pos_bpm and r.gt_hr_bpm else None,
-              "BPM Δ", colour="#94a3b8")
+              "BPM Δ", "blue", "Difference")
         st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Two-column detail section ─────────────────────────────────────────────
@@ -594,61 +599,52 @@ def _render_results(st, r: VideoAnalysisResult) -> None:
     with left:
         # BVP waveform
         if r.bvp_waveform is not None and len(r.bvp_waveform) > 0:
-            st.markdown(
-                "<div style='font-size:12px;color:#94a3b8;font-weight:600;"
-                "letter-spacing:.5px;margin-bottom:4px;'>BVP WAVEFORM</div>",
-                unsafe_allow_html=True,
-            )
-            import pandas as pd
-            bvp_df = pd.DataFrame({"BVP": r.bvp_waveform})
-            st.line_chart(bvp_df, height=160)
+            with st.container(border=True):
+                st.markdown('<div class="panel-title">BVP Waveform</div>', unsafe_allow_html=True)
+                import pandas as pd
+                bvp_df = pd.DataFrame({"BVP": r.bvp_waveform})
+                st.line_chart(bvp_df, height=160)
 
         # Per-second HR trace
         if r.hr_trace is not None and len(r.hr_trace) > 1:
-            st.markdown(
-                "<div style='font-size:12px;color:#94a3b8;font-weight:600;"
-                "letter-spacing:.5px;margin-bottom:4px;'>HR TRACE (BPM over time)</div>",
-                unsafe_allow_html=True,
-            )
-            import pandas as pd
-            trace_df = pd.DataFrame({
-                "HR (BPM)": r.hr_trace,
-            }, index=np.round(r.hr_trace_times, 1))
-            if r.gt_hr_bpm is not None:
-                trace_df["Ground Truth"] = r.gt_hr_bpm
-            st.line_chart(trace_df, height=180)
+            with st.container(border=True):
+                st.markdown('<div class="panel-title">HR TRACE (BPM over time)</div>', unsafe_allow_html=True)
+                import pandas as pd
+                trace_df = pd.DataFrame({
+                    "HR (BPM)": r.hr_trace,
+                }, index=np.round(r.hr_trace_times, 1))
+                if r.gt_hr_bpm is not None:
+                    trace_df["Ground Truth"] = r.gt_hr_bpm
+                st.line_chart(trace_df, height=180)
 
     with right:
         # Video + clip metadata
-        st.markdown(
-            "<div style='font-size:12px;color:#94a3b8;font-weight:600;"
-            "letter-spacing:.5px;margin-bottom:8px;'>CLIP METADATA</div>",
-            unsafe_allow_html=True,
-        )
+        with st.container(border=True):
+            st.markdown('<div class="panel-title">Clip Metadata</div>', unsafe_allow_html=True)
 
-        def _row(label, value):
-            st.markdown(
-                f"<div style='display:flex;justify-content:space-between;"
-                f"font-size:12px;padding:4px 0;border-bottom:1px solid #1e293b;'>"
-                f"<span style='color:#64748b;'>{label}</span>"
-                f"<span style='color:#e2e8f0;font-family:monospace;'>{value}</span>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+            def _row(label, value):
+                st.markdown(
+                    f"<div style='display:flex;justify-content:space-between;"
+                    f"font-size:12px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);'>"
+                    f"<span style='color:#64748b;font-weight:500;'>{label}</span>"
+                    f"<span style='color:#e2e8f0;font-family:monospace;font-weight:600;'>{value}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
 
-        _row("File", r.video_name)
-        _row("Duration", f"{r.duration_s:.1f} s")
-        _row("FPS (detected)", f"{r.fps_detected:.1f}")
-        _row("Total frames", str(r.total_frames))
-        _row("Face detected", f"{r.face_detected_frames} frames")
-        _row("Clean frames", f"{r.clean_frame_frac*100:.0f}%")
-        _row("POS HR", f"{r.hr_pos_bpm:.1f} BPM" if r.hr_pos_bpm else "—")
-        _row("CHROM HR", f"{r.hr_chrom_bpm:.1f} BPM" if r.hr_chrom_bpm else "—")
-        _row("Analysis time", f"{r.analysis_duration_s:.1f} s")
+            _row("File", r.video_name)
+            _row("Duration", f"{r.duration_s:.1f} s")
+            _row("FPS (detected)", f"{r.fps_detected:.1f}")
+            _row("Total frames", str(r.total_frames))
+            _row("Face detected", f"{r.face_detected_frames} frames")
+            _row("Clean frames", f"{r.clean_frame_frac*100:.0f}%")
+            _row("POS HR", f"{r.hr_pos_bpm:.1f} BPM" if r.hr_pos_bpm else "—")
+            _row("CHROM HR", f"{r.hr_chrom_bpm:.1f} BPM" if r.hr_chrom_bpm else "—")
+            _row("Analysis time", f"{r.analysis_duration_s:.1f} s")
 
     # ── Per-window table ──────────────────────────────────────────────────────
     if r.per_window:
-        with st.expander("📋 Per-window detail table", expanded=False):
+        with st.expander("Per-window detail table", expanded=False):
             import pandas as pd
             df = pd.DataFrame(r.per_window)
             df.columns = ["Start (s)", "End (s)", "POS HR", "CHROM HR",
@@ -657,7 +653,7 @@ def _render_results(st, r: VideoAnalysisResult) -> None:
 
             csv = df.to_csv(index=False).encode()
             st.download_button(
-                "⬇ Download CSV",
+                "Download CSV",
                 data=csv,
                 file_name=f"{Path(r.video_name).stem}_rppg_windows.csv",
                 mime="text/csv",

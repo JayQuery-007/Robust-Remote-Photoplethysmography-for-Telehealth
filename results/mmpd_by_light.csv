@@ -1,0 +1,5 @@
+method,group,n_clips,n_valid,n_failed,mae_mean,mae_std,mae_median,rmse,mape_pct,bias,loa_low,loa_high,pearson_r,ccc,within_2bpm_pct,within_5bpm_pct,within_10bpm_pct,mean_snr_db,bvp_pearson,coverage_pct
+POS,LED-low (light_label=0),8326,8326,0,17.023,16.688,10.582,23.838,19.772,-3.112,-49.438,43.215,0.1778,0.1705,16.6,33.8,48.8,0.04,0.0616,
+CHROM,LED-low (light_label=0),8326,8326,0,17.642,16.841,11.66,24.39,20.511,-3.125,-50.537,44.288,0.1425,0.1365,14.7,31.8,47.1,-0.04,-0.0554,
+DEEP,LED-low (light_label=0),8326,8326,0,31.106,16.143,28.741,35.045,34.18,-31.091,-62.79,0.607,-0.0461,-0.0011,0.7,3.1,7.0,1.17,0.0055,
+FUSION,LED-low (light_label=0),8326,8326,0,17.35,16.55,11.608,23.978,19.623,-7.594,-52.174,36.985,0.1536,0.1387,15.5,32.2,46.9,0.26,,
