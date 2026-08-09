@@ -400,18 +400,11 @@ _MOTION_CAL_FRAMES = 90  # ~3 s
 
 
 def sidebar_camera_calibration_panel(st, session_state) -> CameraCalibration:
-    """Render the full camera calibration panel in the Streamlit sidebar.
-
-    Manages capture state via session_state so captures survive Streamlit reruns.
-    Returns the current CameraCalibration that the inference loop should use.
-
-    Initialise persistent state on first run.
-    """
-    # ── Persistent calibration objects ────────────────────────────────────────
+    """Camera calibration — renders with plain st.* so caller wraps in one expander."""
     if "cam_cal" not in session_state:
         session_state.cam_cal = CameraCalibration()
     if "cal_capture_mode" not in session_state:
-        session_state.cal_capture_mode = None     # None | "grey" | "white" | "skin" | "lighting" | "motion"
+        session_state.cal_capture_mode = None
     if "cal_capture_frames" not in session_state:
         session_state.cal_capture_frames = []
     if "cal_capture_start" not in session_state:
@@ -419,232 +412,151 @@ def sidebar_camera_calibration_panel(st, session_state) -> CameraCalibration:
     if "cal_log" not in session_state:
         session_state.cal_log = deque(maxlen=12)
 
-    cal: CameraCalibration = session_state.cam_cal
+    cal = session_state.cam_cal
 
-    st.sidebar.markdown("---")
-    st.sidebar.markdown(
-        "<div style='font-size:13px;font-weight:700;color:#94a3b8;"
-        "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>"
-        "📐 Camera Calibration</div>",
+    def _badge(label, ok, warn=False):
+        col = "#10b981" if ok else ("#f59e0b" if warn else "#64748b")
+        txt = "OK" if ok else ("~" if warn else "-")
+        return (
+            "<span style='background:" + col + "22;border:1px solid " + col + "55;"
+            "color:" + col + ";padding:2px 7px;border-radius:4px;font-size:10px;"
+            "font-weight:600;margin:2px;display:inline-block;'>" + txt + " " + label + "</span>"
+        )
+
+    bp_anchored = bool(
+        session_state.get("bp_estimator") and
+        getattr(session_state.get("bp_estimator"), "baseline", None)
+    )
+    spo2_done = bool(session_state.get("spo2_cal_result"))
+
+    st.markdown(
+        _badge("Colour",  cal.colour.calibrated) +
+        _badge("Lighting", cal.lighting.ready, warn=True) +
+        _badge("Motion",   cal.motion.ready,   warn=True) +
+        _badge("SpO2",     spo2_done,           warn=not spo2_done) +
+        _badge("BP",       bp_anchored,         warn=not bp_anchored),
         unsafe_allow_html=True,
     )
 
-    # ── Toggle switches ────────────────────────────────────────────────────────
-    cal.apply_colour = st.sidebar.checkbox(
-        "Apply colour correction", value=cal.apply_colour,
-        help="Applies per-channel gain from the grey-card capture to every ROI frame."
+    tc1, tc2 = st.columns(2)
+    cal.apply_colour   = tc1.checkbox("Colour correction",  value=cal.apply_colour,   key="_cal_col_on")
+    cal.apply_lighting = tc2.checkbox("Lighting normalise", value=cal.apply_lighting, key="_cal_lit_on")
+
+    st.markdown("---")
+    st.markdown("**Colour / White-balance**")
+    ca, cb, cc = st.columns(3)
+    busy = session_state.cal_capture_mode is not None
+    if ca.button("Grey card",   key="btn_grey",      disabled=busy):
+        session_state.cal_capture_mode  = "grey"
+        session_state.cal_capture_frames = []
+        session_state.cal_capture_start = time.time()
+        session_state.cal_log.appendleft("Grey-card capture started (3 s).")
+    if cb.button("White patch", key="btn_white",     disabled=busy or not cal.colour.calibrated):
+        session_state.cal_capture_mode  = "white"
+        session_state.cal_capture_frames = []
+        session_state.cal_capture_start = time.time()
+        session_state.cal_log.appendleft("White-patch capture started (3 s).")
+    if cc.button("Reset",       key="btn_reset_col", disabled=not cal.colour.calibrated):
+        session_state.cam_cal.colour = ColourCalibrationState()
+        session_state.cal_log.appendleft("Colour calibration reset.")
+    if session_state.cal_capture_mode in ("grey", "white", "skin"):
+        el = time.time() - session_state.cal_capture_start
+        st.progress(min(el / _CAPTURE_DURATION_S, 1.0),
+                    text="Capturing... %.1fs" % max(0, _CAPTURE_DURATION_S - el))
+    elif cal.colour.calibrated:
+        g = cal.colour.gain
+        st.caption("Gains  R:%.3f  G:%.3f  B:%.3f" % (g[0], g[1], g[2]))
+    else:
+        st.caption("Not calibrated — unity gain active.")
+
+    st.markdown("---")
+    st.markdown("**Session lighting**")
+    la, lb = st.columns(2)
+    if la.button("Capture baseline", key="btn_lighting",    disabled=busy):
+        session_state.cal_capture_mode  = "lighting"
+        session_state.cal_capture_frames = []
+        session_state.cal_capture_start = time.time()
+        session_state.cal_log.appendleft("Lighting baseline started (3 s).")
+    if lb.button("Reset##light",     key="btn_reset_light", disabled=not cal.lighting.ready):
+        session_state.cam_cal.lighting = LightingBaseline()
+        session_state.cal_log.appendleft("Lighting baseline reset.")
+    if session_state.cal_capture_mode == "lighting":
+        el = time.time() - session_state.cal_capture_start
+        st.progress(min(el / _CAPTURE_DURATION_S, 1.0),
+                    text="Capturing... %.1fs" % max(0, _CAPTURE_DURATION_S - el))
+    elif cal.lighting.ready and cal.lighting.mean_rgb is not None:
+        m = cal.lighting.mean_rgb
+        st.caption("Baseline  R:%.3f  G:%.3f  B:%.3f" % (m[0], m[1], m[2]))
+    else:
+        st.caption("Not captured — raw frames used.")
+
+    st.markdown("---")
+    st.markdown("**Motion gate**")
+    ma, mb = st.columns(2)
+    if ma.button("Calibrate",     key="btn_motion",       disabled=busy):
+        session_state.cal_capture_mode  = "motion"
+        session_state.cal_capture_frames = []
+        session_state.cal_capture_start = time.time()
+        session_state.cal_log.appendleft("Motion floor capture started — keep still (3 s).")
+    if mb.button("Reset##motion", key="btn_reset_motion", disabled=not cal.motion.ready):
+        session_state.cam_cal.motion = MotionFloorState()
+        session_state.cal_log.appendleft("Motion calibration reset.")
+    if session_state.cal_capture_mode == "motion":
+        el = time.time() - session_state.cal_capture_start
+        st.progress(min(el / _CAPTURE_DURATION_S, 1.0),
+                    text="Keep still... %.1fs" % max(0, _CAPTURE_DURATION_S - el))
+    elif cal.motion.ready:
+        st.caption("Noise floor: %.4f  |  k: %.1f" % (cal.motion.noise_floor, cal.motion.motion_mad_k))
+    else:
+        st.caption("Default k=%.1f" % cal.motion.motion_mad_k)
+
+    st.markdown("---")
+    st.markdown("**SpO2 calibration**")
+    ref_text = st.text_area(
+        "Oximeter readings (spo2%,  ratioR — one per line)",
+        key="_spo2_cal_widget", height=68,
     )
-    cal.apply_lighting = st.sidebar.checkbox(
-        "Apply session lighting normalisation", value=cal.apply_lighting,
-        help="Divides each channel by the session mean captured during the baseline window."
-    )
+    spo2_cal_result = None
+    if (ref_text or "").strip():
+        pcts, ratios = [], []
+        for line in ref_text.strip().splitlines():
+            try:
+                pts = line.replace(";", ",").split(",")
+                pcts.append(float(pts[0].strip()))
+                ratios.append(float(pts[1].strip()))
+            except Exception:
+                continue
+        if pcts:
+            try:
+                from facial_vitals import Spo2Calibration
+                spo2_cal_result = Spo2Calibration.fit(ratios=ratios, spo2_ref=pcts)
+                st.success("SpO2 calibrated (%s)." % spo2_cal_result.note)
+            except Exception as exc:
+                st.error("Calibration failed: %s" % exc)
+    st.checkbox("Show uncalibrated SpO2", key="_spo2_prov_widget", value=True)
+    session_state["spo2_cal_result"] = spo2_cal_result
+    session_state["spo2_show_prov"]  = bool(session_state.get("_spo2_prov_widget", True))
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Section 1: Colour calibration
-    # ──────────────────────────────────────────────────────────────────────────
-    with st.sidebar.expander("🎨 Colour / White-balance", expanded=not cal.colour.calibrated):
-
-        st.caption(
-            "**What to do:** hold a neutral grey card (or piece of white paper) "
-            "so it fills most of the camera view, then press the button. "
-            "Do this under your normal room lighting before starting inference."
-        )
-
-        _render_surface_status(st, cal)
-
-        col_a, col_b = st.columns(2)
-        with col_a:
-            if st.button("📷 Capture grey card", key="btn_grey",
-                         disabled=session_state.cal_capture_mode is not None):
-                session_state.cal_capture_mode = "grey"
-                session_state.cal_capture_frames = []
-                session_state.cal_capture_start = time.time()
-                session_state.cal_log.appendleft("Grey-card capture started (3 s).")
-
-        with col_b:
-            if st.button("⬜ Add white patch", key="btn_white",
-                         disabled=session_state.cal_capture_mode is not None
-                         or not cal.colour.calibrated):
-                session_state.cal_capture_mode = "white"
-                session_state.cal_capture_frames = []
-                session_state.cal_capture_start = time.time()
-                session_state.cal_log.appendleft("White-patch capture started (3 s).")
-
-        if st.button("🟤 Add skin patch", key="btn_skin",
-                     disabled=session_state.cal_capture_mode is not None):
-            session_state.cal_capture_mode = "skin"
-            session_state.cal_capture_frames = []
-            session_state.cal_capture_start = time.time()
-            session_state.cal_log.appendleft("Skin-patch capture started (3 s).")
-
-        if session_state.cal_capture_mode in ("grey", "white", "skin"):
-            elapsed = time.time() - session_state.cal_capture_start
-            remaining = max(0.0, _CAPTURE_DURATION_S - elapsed)
-            st.progress(
-                min(elapsed / _CAPTURE_DURATION_S, 1.0),
-                text=f"Capturing {session_state.cal_capture_mode}… {remaining:.1f}s"
-            )
-
-        if cal.colour.calibrated:
-            g = cal.colour.gain
-            st.markdown(
-                f"<div style='font-size:11px;color:#64748b;margin-top:6px;'>"
-                f"Gains — R: <b style='color:#f87171'>{g[0]:.3f}</b> "
-                f"G: <b style='color:#4ade80'>{g[1]:.3f}</b> "
-                f"B: <b style='color:#60a5fa'>{g[2]:.3f}</b></div>",
-                unsafe_allow_html=True,
-            )
-            if st.button("↺ Reset colour cal", key="btn_reset_colour"):
-                session_state.cam_cal.colour = ColourCalibrationState()
-                session_state.cal_log.appendleft("Colour calibration reset.")
-        else:
-            st.info("No colour calibration yet — unity gain active.", icon="ℹ️")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Section 2: Lighting baseline
-    # ──────────────────────────────────────────────────────────────────────────
-    with st.sidebar.expander("💡 Session lighting baseline", expanded=not cal.lighting.ready):
-
-        st.caption(
-            "**What to do:** sit naturally, face the camera, keep still for 3 s, "
-            "then press Capture. Do this once per session or whenever your room "
-            "lighting changes significantly."
-        )
-
-        if cal.lighting.ready and cal.lighting.mean_rgb is not None:
-            m = cal.lighting.mean_rgb
-            st.markdown(
-                f"<div style='font-size:11px;color:#64748b;'>"
-                f"Baseline — R: <b style='color:#f87171'>{m[0]:.3f}</b> "
-                f"G: <b style='color:#4ade80'>{m[1]:.3f}</b> "
-                f"B: <b style='color:#60a5fa'>{m[2]:.3f}</b></div>",
-                unsafe_allow_html=True,
-            )
-
-        if st.button("🌅 Capture lighting baseline", key="btn_lighting",
-                     disabled=session_state.cal_capture_mode is not None):
-            session_state.cal_capture_mode = "lighting"
-            session_state.cal_capture_frames = []
-            session_state.cal_capture_start = time.time()
-            session_state.cal_log.appendleft("Lighting baseline capture started (3 s).")
-
-        if session_state.cal_capture_mode == "lighting":
-            elapsed = time.time() - session_state.cal_capture_start
-            remaining = max(0.0, _CAPTURE_DURATION_S - elapsed)
-            st.progress(
-                min(elapsed / _CAPTURE_DURATION_S, 1.0),
-                text=f"Capturing baseline… {remaining:.1f}s"
-            )
-
-        if cal.lighting.ready:
-            if st.button("↺ Reset lighting baseline", key="btn_reset_lighting"):
-                session_state.cam_cal.lighting = LightingBaseline()
-                session_state.cal_log.appendleft("Lighting baseline reset.")
-        else:
-            st.info("No session baseline — raw frames used.", icon="ℹ️")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Section 3: Motion floor calibration
-    # ──────────────────────────────────────────────────────────────────────────
-    with st.sidebar.expander("🏃 Motion gate calibration", expanded=not cal.motion.ready):
-
-        st.caption(
-            "**What to do:** keep completely still for 3 s, then press Calibrate. "
-            "This adapts the motion rejection threshold to your camera's own noise "
-            "level so shaky frames are dropped without over-rejecting good ones."
-        )
-
-        if cal.motion.ready:
-            st.markdown(
-                f"<div style='font-size:11px;color:#64748b;'>"
-                f"Noise floor: <b>{cal.motion.noise_floor:.4f}</b> &nbsp;|&nbsp; "
-                f"MAD k: <b>{cal.motion.motion_mad_k:.1f}</b></div>",
-                unsafe_allow_html=True,
-            )
-
-        if st.button("🎯 Calibrate motion floor", key="btn_motion",
-                     disabled=session_state.cal_capture_mode is not None):
-            session_state.cal_capture_mode = "motion"
-            session_state.cal_capture_frames = []
-            session_state.cal_capture_start = time.time()
-            session_state.cal_log.appendleft("Motion floor capture started (3 s).")
-
-        if session_state.cal_capture_mode == "motion":
-            elapsed = time.time() - session_state.cal_capture_start
-            remaining = max(0.0, _CAPTURE_DURATION_S - elapsed)
-            st.progress(
-                min(elapsed / _CAPTURE_DURATION_S, 1.0),
-                text=f"Calibrating motion… {remaining:.1f}s"
-            )
-
-        if cal.motion.ready:
-            if st.button("↺ Reset motion cal", key="btn_reset_motion"):
-                session_state.cam_cal.motion = MotionFloorState()
-                session_state.cal_log.appendleft("Motion calibration reset.")
-        else:
-            st.info(f"Using default k={cal.motion.motion_mad_k:.1f}", icon="ℹ️")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Section 4: SpO2 device calibration (wraps facial_vitals.Spo2Calibration)
-    # ──────────────────────────────────────────────────────────────────────────
-    with st.sidebar.expander("🩸 SpO₂ device calibration", expanded=False):
-
-        st.caption(
-            "**Optional but recommended.** Enter one or more reference pulse-oximeter "
-            "readings paired with the ratio-R value measured simultaneously on this "
-            "camera. The ratio-R for the current live clip is shown in the diagnostics "
-            "log. Without this, SpO₂ is labelled **provisional** (relative trend only)."
-        )
-
-        # Widget keys (prefixed _) differ from the storage keys so Streamlit
-        # never sees a write to a key already owned by a widget.
-        ref_text = st.text_area(
-            "SpO₂ ref %  ,  ratio-R  (one pair per line)",
-            key="_spo2_cal_text_widget",
-            height=80,
-            help="Example:\n98, 0.55\n95, 0.82\n\nObtain ratio-R from the diagnostics log."
-        )
-
-        spo2_cal_result = None
-        if ref_text.strip():
-            pcts, ratios = [], []
-            for line in ref_text.strip().splitlines():
-                try:
-                    parts = line.replace(";", ",").split(",")
-                    pcts.append(float(parts[0].strip()))
-                    ratios.append(float(parts[1].strip()))
-                except Exception:
-                    continue
-            if pcts:
-                try:
-                    from facial_vitals import Spo2Calibration
-                    spo2_cal_result = Spo2Calibration.fit(ratios=ratios, spo2_ref=pcts)
-                    st.success(f"✓ SpO₂ calibrated ({spo2_cal_result.note}).", icon="✅")
-                except Exception as exc:
-                    st.error(f"Calibration failed: {exc}")
-
-        # Checkbox: widget owns "_spo2_show_prov_widget"; we read it back and
-        # store under "spo2_show_prov" (no widget with that key, so safe to write).
-        st.checkbox(
-            "Show provisional SpO₂ (uncalibrated)",
-            key="_spo2_show_prov_widget",
-            help="Uncalibrated SpO₂ is a relative trend, not a validated percentage.",
-        )
-
-        session_state["spo2_cal_result"] = spo2_cal_result
-        session_state["spo2_show_prov"] = bool(session_state.get("_spo2_show_prov_widget", True))
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Calibration status summary + log
-    # ──────────────────────────────────────────────────────────────────────────
-    st.sidebar.markdown("**Calibration status**")
-    _render_calibration_badges(st, cal)
+    st.markdown("---")
+    st.markdown("**Blood pressure anchor**")
+    if "bp_estimator" not in session_state:
+        from facial_vitals import PersonalizedBPEstimator
+        session_state.bp_estimator = PersonalizedBPEstimator()
+    bp = session_state.bp_estimator
+    ba, bb = st.columns(2)
+    sbp0 = ba.number_input("SBP (mmHg)", 70, 220, 120, key="bp_sbp0")
+    dbp0 = bb.number_input("DBP (mmHg)", 40, 140, 80,  key="bp_dbp0")
+    anchor_on = st.checkbox("Use as BP anchor", value=False, key="bp_anchor_on")
+    if bp.baseline is not None:
+        st.success("Anchored at %.0f/%.0f mmHg" % (bp.baseline.sbp, bp.baseline.dbp))
+    elif anchor_on:
+        st.info("Waiting for stable pulse...")
 
     if session_state.cal_log:
-        with st.sidebar.expander("📋 Calibration log", expanded=False):
+        st.markdown("---")
+        with st.expander("Calibration log"):
             st.markdown(
-                "<div style='font-size:10.5px;color:#64748b;font-family:monospace;"
-                "line-height:1.6;'>"
+                "<div style='font-size:10px;color:#64748b;font-family:monospace;line-height:1.7;'>"
                 + "<br>".join(list(session_state.cal_log))
                 + "</div>",
                 unsafe_allow_html=True,

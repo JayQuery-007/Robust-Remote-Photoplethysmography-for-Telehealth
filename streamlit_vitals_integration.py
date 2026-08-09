@@ -52,58 +52,45 @@ SRC_LABEL = {
 
 
 def sidebar_calibration_controls(st, session_state) -> VitalsCalibration:
-    """Render calibration inputs and return a VitalsCalibration.
-
-    Persists the BP estimator across reruns via session_state so a captured cuff
-    baseline / trained model survives Streamlit's re-execution model.
-    """
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### Calibration")
-
+    """Render calibration controls. Called inside a parent expander in streamlit_app.py."""
     if "bp_estimator" not in session_state:
         session_state.bp_estimator = PersonalizedBPEstimator()
     bp = session_state.bp_estimator
 
-    # ---- SpO2 device calibration ----------------------------------------- #
-    with st.sidebar.expander("SpO₂ device calibration", expanded=False):
-        st.caption("Enter one or more reference-oximeter readings taken on THIS "
-                   "camera + lighting. Without this, SpO₂ is provisional only.")
-        ref = st.text_input("ref% , ratioR  (one pair per line)",
-                            value="", key="spo2_ref",
-                            help="e.g.\n98, 0.55\n95, 0.80")
-        spo2_cal = None
-        if ref.strip():
-            pcts, ratios = [], []
-            for line in ref.splitlines():
-                try:
-                    p, r = line.replace(";", ",").split(",")
-                    pcts.append(float(p)); ratios.append(float(r))
-                except Exception:
-                    continue
-            if pcts:
-                spo2_cal = Spo2Calibration.fit(ratios=ratios, spo2_ref=pcts)
-                st.success(f"SpO₂ calibrated ({spo2_cal.note}).")
+    # SpO2 calibration
+    st.markdown("**SpO2 calibration**")
+    ref = st.text_input(
+        "Oximeter readings (one per line: spo2%, ratioR)",
+        value="", key="spo2_ref",
+        placeholder="e.g.  98, 0.55",
+    )
+    spo2_cal = None
+    if ref.strip():
+        pcts, ratios = [], []
+        for line in ref.splitlines():
+            try:
+                p, r = line.replace(";", ",").split(",")
+                pcts.append(float(p)); ratios.append(float(r))
+            except Exception:
+                continue
+        if pcts:
+            spo2_cal = Spo2Calibration.fit(ratios=ratios, spo2_ref=pcts)
+            st.success(f"SpO2 calibrated ({spo2_cal.note}).")
+    allow_prov = st.checkbox("Show uncalibrated SpO2", value=True, key="spo2_prov")
 
-    allow_prov = st.sidebar.checkbox("Show provisional (uncalibrated) SpO₂",
-                                     value=True,
-                                     help="Uncalibrated SpO₂ is a relative trend, "
-                                          "not a validated percentage.")
+    st.markdown("---")
 
-    # ---- BP cuff anchor (auto-applied inside the live loop) -------------- #
-    with st.sidebar.expander("Blood pressure (cuff anchor)", expanded=True):
-        st.caption("Absolute BP cannot come from a face alone. Enter ONE cuff "
-                   "reading; BP is then reported as a TREND anchored to it. "
-                   "Set the values, tick the box, THEN start live inference.")
-        c1, c2 = st.columns(2)
-        sbp0 = c1.number_input("Cuff SBP", 70, 220, 120, key="bp_sbp0")
-        dbp0 = c2.number_input("Cuff DBP", 40, 140, 80, key="bp_dbp0")
-        anchor_on = st.checkbox("Anchor BP to this cuff reading (live)",
-                                value=False, key="bp_anchor_on")
-        if bp.baseline is not None:
-            st.success(f"Anchored at {bp.baseline.sbp:.0f}/{bp.baseline.dbp:.0f} mmHg "
-                       "— card now shows trend.")
-        elif anchor_on:
-            st.info("Waiting for a stable pulse to anchor…")
+    # BP anchor
+    st.markdown("**Blood pressure anchor**")
+    st.caption("Enter one cuff reading. BP will show as a trend from this baseline.")
+    c1, c2 = st.columns(2)
+    sbp0 = c1.number_input("SBP", 70, 220, 120, key="bp_sbp0", label_visibility="visible")
+    dbp0 = c2.number_input("DBP", 40, 140, 80,  key="bp_dbp0", label_visibility="visible")
+    anchor_on = st.checkbox("Use this reading as anchor", value=False, key="bp_anchor_on")
+    if bp.baseline is not None:
+        st.success(f"Anchored at {bp.baseline.sbp:.0f}/{bp.baseline.dbp:.0f} mmHg")
+    elif anchor_on:
+        st.info("Waiting for a stable pulse...")
 
     calib = VitalsCalibration(spo2=spo2_cal, bp=bp, allow_provisional_spo2=allow_prov)
     calib.bp_anchor = (float(sbp0), float(dbp0)) if anchor_on else None
@@ -122,31 +109,16 @@ def _card(st, label: str, v: VitalSign, unit_override: str = "") -> None:
         sub = f"{tag} · confidence {'▮'*bars}{'▯'*(5-bars)}"
         if v.source in ("rppg_ratio_uncalibrated", "rppg_morphology_personalized"):
             sub += f" · {v.note}"
-            
-    color_map = {
-        "HEART RATE": "red",
-        "SpO₂": "cyan",
-        "RESP RATE": "emerald",
-        "BLOOD PRESSURE": "purple"
-    }
-    color_theme = color_map.get(label, "blue")
-    
-    theme_colors = {
-        "red": {"border": "#f43f5e", "glow": "rgba(244, 63, 94, 0.15)"},
-        "cyan": {"border": "#06b6d4", "glow": "rgba(6, 182, 212, 0.15)"},
-        "emerald": {"border": "#10b981", "glow": "rgba(16, 185, 129, 0.15)"},
-        "purple": {"border": "#8b5cf6", "glow": "rgba(139, 92, 246, 0.15)"},
-        "blue": {"border": "#3b82f6", "glow": "rgba(59, 130, 246, 0.15)"},
-    }
-    c = theme_colors.get(color_theme, theme_colors["blue"])
-    
     st.markdown(
         f"""
-        <div class="metric-shell-new" style="border-left: 4px solid {c['border']}; --glow-color: {c['glow']};">
-          <div class="metric-label-new">{label}</div>
-          <div class="metric-value-new">{val}</div>
-          <div class="metric-unit-new">{unit}</div>
-          <div class="metric-status">{sub}</div>
+        <div style="background:#0f172a;border:1px solid #334155;border-radius:8px;
+                    padding:16px 12px;text-align:center;min-height:150px;
+                    display:flex;flex-direction:column;justify-content:center;">
+          <div style="color:#94a3b8;font-size:12px;font-weight:600;letter-spacing:.5px;">{label}</div>
+          <div style="font-size:44px;font-weight:700;color:#f8fafc;line-height:1;
+                      font-variant-numeric:tabular-nums;margin:6px 0;">{val}</div>
+          <div style="color:#64748b;font-size:13px;font-weight:500;">{unit}</div>
+          <div style="color:#475569;font-size:10.5px;margin-top:8px;">{sub}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -182,11 +154,14 @@ def render_vitals_panel(st, vitals: Dict[str, VitalSign], slots: Dict[str, objec
                 tag = SRC_LABEL.get(sbp.source, sbp.source)
                 st.markdown(
                     f"""
-                    <div class="metric-shell-new" style="border-left: 4px solid #8b5cf6; --glow-color: rgba(139, 92, 246, 0.15);">
-                      <div class="metric-label-new">BLOOD PRESSURE</div>
-                      <div class="metric-value-new">{sbp.value:.0f}/{dbp.value:.0f}</div>
-                      <div class="metric-unit-new">mmHg</div>
-                      <div class="metric-status">{tag} · {sbp.note}</div>
+                    <div style="background:#0f172a;border:1px solid #334155;border-radius:8px;
+                                padding:16px 12px;text-align:center;min-height:150px;
+                                display:flex;flex-direction:column;justify-content:center;">
+                      <div style="color:#94a3b8;font-size:12px;font-weight:600;">BLOOD PRESSURE</div>
+                      <div style="font-size:40px;font-weight:700;color:#f8fafc;margin:6px 0;
+                                  font-variant-numeric:tabular-nums;">{sbp.value:.0f}/{dbp.value:.0f}</div>
+                      <div style="color:#64748b;font-size:13px;">mmHg</div>
+                      <div style="color:#475569;font-size:10.5px;margin-top:8px;">{tag} · {sbp.note}</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
